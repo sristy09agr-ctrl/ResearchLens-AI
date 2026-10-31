@@ -1,0 +1,13 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+
+# Uploaded documents and database
+data/uploads/
+data/researchlens.db
+
+# Environment variables
+.env
