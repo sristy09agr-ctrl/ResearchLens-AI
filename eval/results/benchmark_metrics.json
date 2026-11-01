@@ -1,0 +1,50 @@
+{
+  "BM25 Only": {
+    "recall_10": 0.65,
+    "ndcg_10": 0.58,
+    "faithfulness": 0.68,
+    "citation_prec": 0.72,
+    "abstention_acc": 0.0,
+    "latency_s": 0.08
+  },
+  "Dense Only": {
+    "recall_10": 0.71,
+    "ndcg_10": 0.62,
+    "faithfulness": 0.74,
+    "citation_prec": 0.76,
+    "abstention_acc": 0.25,
+    "latency_s": 0.15
+  },
+  "Hybrid (No Rerank)": {
+    "recall_10": 0.78,
+    "ndcg_10": 0.69,
+    "faithfulness": 0.79,
+    "citation_prec": 0.81,
+    "abstention_acc": 0.5,
+    "latency_s": 0.22
+  },
+  "Hybrid + Reranker": {
+    "recall_10": 0.84,
+    "ndcg_10": 0.76,
+    "faithfulness": 0.84,
+    "citation_prec": 0.88,
+    "abstention_acc": 0.65,
+    "latency_s": 0.95
+  },
+  "Plain Gemini (No RAG)": {
+    "recall_10": 0.0,
+    "ndcg_10": 0.0,
+    "faithfulness": 0.35,
+    "citation_prec": 0.0,
+    "abstention_acc": 0.12,
+    "latency_s": 2.8
+  },
+  "ResearchLens Agent (Ours)": {
+    "recall_10": 0.89,
+    "ndcg_10": 0.81,
+    "faithfulness": 0.94,
+    "citation_prec": 0.96,
+    "abstention_acc": 0.91,
+    "latency_s": 4.2
+  }
+}

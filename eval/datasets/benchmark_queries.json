@@ -1,0 +1,59 @@
+[
+  {
+    "id": "q1",
+    "query": "What is the primary architecture proposed in the Transformer paper and how do self-attention mechanisms operate?",
+    "category": "methodology",
+    "is_answerable": true,
+    "expected_topics": ["Self-Attention", "Multi-Head Attention", "Feed-Forward Networks", "Positional Encoding"]
+  },
+  {
+    "id": "q2",
+    "query": "How does LoRA parameter-efficient fine-tuning reduce GPU memory footprint compared to full model tuning?",
+    "category": "efficiency",
+    "is_answerable": true,
+    "expected_topics": ["Low-Rank Adaptation", "Rank Decomposition Matrices", "Frozen Weights", "Optimizer States"]
+  },
+  {
+    "id": "q3",
+    "query": "Compare the training throughput, quantization precision, and memory efficiency between LoRA and QLoRA.",
+    "category": "multi_paper_comparison",
+    "is_answerable": true,
+    "expected_topics": ["NF4 Quantization", "Double Quantization", "Paged Optimizers", "Trade-offs"]
+  },
+  {
+    "id": "q4",
+    "query": "What are the exact clinical trial outcomes of mRNA-1273 in pediatric oncology patients described in these papers?",
+    "category": "unanswerable_abstention",
+    "is_answerable": false,
+    "expected_topics": []
+  },
+  {
+    "id": "q5",
+    "query": "What are the key limitations and computational bottlenecks of standard full-rank multi-head self-attention?",
+    "category": "limitations",
+    "is_answerable": true,
+    "expected_topics": ["O(N^2) Complexity", "Sequence Length", "KV Cache Memory"]
+  },
+  {
+    "id": "q6",
+    "query": "Does QLoRA claim to achieve 100% of 16-bit full fine-tuning performance across all evaluated benchmarks?",
+    "category": "claim_verification",
+    "is_answerable": true,
+    "expected_topics": ["Vicuna Benchmarks", "GLUE", "RoBERTa"]
+  },
+  {
+    "id": "q7",
+    "query": "What was the author's personal emotional motivation during the writing of chapter 4?",
+    "category": "unanswerable_abstention",
+    "is_answerable": false,
+    "expected_topics": []
+  },
+  {
+    "id": "q8",
+    "query": "How does reciprocal rank fusion (RRF) balance sparse lexical retrieval with dense semantic vectors?",
+    "category": "retrieval_architecture",
+    "is_answerable": true,
+    "expected_topics": ["Rank Normalization", "BM25", "Constant Factor 60", "Robustness"]
+  }
+]
+
