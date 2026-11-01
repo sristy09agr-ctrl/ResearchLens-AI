@@ -12,7 +12,9 @@ import {
   Microscope,
   Trash2,
   MessageSquare,
-  Check
+  Check,
+  LoaderCircle,
+  ExternalLink
 } from "lucide-react";
 
 function ResearchAssistant({ papers = [] }) {
@@ -22,27 +24,28 @@ function ResearchAssistant({ papers = [] }) {
 
   const [showPaperSelector, setShowPaperSelector] = useState(false);
   const [selectedPapers, setSelectedPapers] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   const previousPapersRef = useRef([]);
 
-  // Keep the selected paper list synchronized with My Papers.
-  // Newly uploaded papers are automatically selected.
+  // Keep selected papers synchronized with My Papers.
   useEffect(() => {
     const previousPapers = previousPapersRef.current;
 
     const newlyAddedPapers = papers.filter(
-      (paper) => !previousPapers.includes(paper)
+      (paper) => !previousPapers.some(
+        (previous) => previous.document_id === paper.document_id
+      )
     );
 
     setSelectedPapers((previous) => {
       const remainingSelectedPapers = previous.filter(
-        (paper) => papers.includes(paper)
+        (paper) => papers.some(
+          (current) => current.document_id === paper.document_id
+        )
       );
 
-      return [
-        ...remainingSelectedPapers,
-        ...newlyAddedPapers
-      ];
+      return [...remainingSelectedPapers, ...newlyAddedPapers];
     });
 
     previousPapersRef.current = papers;
@@ -62,16 +65,22 @@ function ResearchAssistant({ papers = [] }) {
   ];
 
   const startNewConversation = () => {
+    if (loading) return;
+
     setActiveConversationId(null);
     setQuestion("");
   };
 
   const openConversation = (id) => {
+    if (loading) return;
+
     setActiveConversationId(id);
     setQuestion("");
   };
 
   const deleteConversation = (id) => {
+    if (loading && activeConversationId === id) return;
+
     setConversations((previous) =>
       previous.filter((conversation) => conversation.id !== id)
     );
@@ -84,8 +93,12 @@ function ResearchAssistant({ papers = [] }) {
 
   const togglePaperSelection = (paper) => {
     setSelectedPapers((previous) => {
-      if (previous.includes(paper)) {
-        return previous.filter((item) => item !== paper);
+      if (previous.some(
+        (item) => item.document_id === paper.document_id
+      )) {
+        return previous.filter(
+          (item) => item.document_id !== paper.document_id
+        );
       }
 
       return [...previous, paper];
@@ -100,28 +113,56 @@ function ResearchAssistant({ papers = [] }) {
     setSelectedPapers([]);
   };
 
-  const handleSubmit = (event) => {
+  // Send the research question to the FastAPI backend.
+  const handleSubmit = async (event) => {
     event.preventDefault();
 
     const trimmedQuestion = question.trim();
 
-    if (!trimmedQuestion) return;
+    if (!trimmedQuestion || loading) return;
 
-    const newMessage = {
+    if (selectedPapers.length === 0) {
+      alert("Please select at least one research paper.");
+      return;
+    }
+
+    const documentIds = selectedPapers
+      .map((paper) => paper.document_id)
+      .filter(Boolean);
+
+    if (documentIds.length === 0) {
+      alert("Selected papers do not have valid document IDs.");
+      return;
+    }
+
+    const conversationId =
+      activeConversationId ?? Date.now();
+
+    const assistantMessageId =
+      `${Date.now()}-assistant`;
+
+    const userMessage = {
+      id: `${Date.now()}-user`,
       role: "user",
       content: trimmedQuestion
     };
 
-    if (activeConversationId === null) {
-      const newId = Date.now();
+    const pendingMessage = {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+      loading: true
+    };
 
+    // Create a new conversation or add to the existing one.
+    if (activeConversationId === null) {
       const newConversation = {
-        id: newId,
+        id: conversationId,
         title:
           trimmedQuestion.length > 35
             ? trimmedQuestion.substring(0, 35) + "..."
             : trimmedQuestion,
-        messages: [newMessage]
+        messages: [userMessage, pendingMessage]
       };
 
       setConversations((previous) => [
@@ -129,16 +170,17 @@ function ResearchAssistant({ papers = [] }) {
         ...previous
       ]);
 
-      setActiveConversationId(newId);
+      setActiveConversationId(conversationId);
     } else {
       setConversations((previous) =>
         previous.map((conversation) =>
-          conversation.id === activeConversationId
+          conversation.id === conversationId
             ? {
                 ...conversation,
                 messages: [
                   ...conversation.messages,
-                  newMessage
+                  userMessage,
+                  pendingMessage
                 ]
               }
             : conversation
@@ -147,6 +189,88 @@ function ResearchAssistant({ papers = [] }) {
     }
 
     setQuestion("");
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/ask", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          query: trimmedQuestion,
+          document_ids: documentIds,
+          top_k: 5,
+          candidate_k: 30,
+          alpha: 0.5
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail
+            ? JSON.stringify(data.detail)
+            : "Unable to generate an answer."
+        );
+      }
+
+      if (data.status !== "success") {
+        throw new Error(
+          data.message || "The research engine could not answer."
+        );
+      }
+
+      // Replace the loading message with the actual answer.
+      setConversations((previous) =>
+        previous.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                messages: conversation.messages.map((message) =>
+                  message.id === assistantMessageId
+                    ? {
+                        ...message,
+                        content: data.answer,
+                        citations: data.citations || [],
+                        evidenceCount: data.total_evidence_passages,
+                        selectedDocuments: data.selected_documents || [],
+                        loading: false
+                      }
+                    : message
+                )
+              }
+            : conversation
+        )
+      );
+
+    } catch (error) {
+      console.error("Research Assistant API error:", error);
+
+      setConversations((previous) =>
+        previous.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                messages: conversation.messages.map((message) =>
+                  message.id === assistantMessageId
+                    ? {
+                        ...message,
+                        content: error.message,
+                        error: true,
+                        loading: false
+                      }
+                    : message
+                )
+              }
+            : conversation
+        )
+      );
+
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -157,7 +281,8 @@ function ResearchAssistant({ papers = [] }) {
 
         <button
           onClick={startNewConversation}
-          className="flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 rounded-xl px-4 py-3 text-sm font-medium transition"
+          disabled={loading}
+          className="flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-xl px-4 py-3 text-sm font-medium transition"
         >
           <Plus size={18} />
           New Conversation
@@ -285,7 +410,6 @@ function ResearchAssistant({ papers = [] }) {
               <div className="absolute right-0 top-full mt-3 w-72 max-w-[85vw] bg-[#111729] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
 
                 <div className="p-4 border-b border-white/10">
-
                   <h3 className="font-semibold text-sm">
                     Select Research Papers
                   </h3>
@@ -293,13 +417,10 @@ function ResearchAssistant({ papers = [] }) {
                   <p className="text-xs text-gray-500 mt-1">
                     {selectedPapers.length} of {papers.length} papers selected
                   </p>
-
                 </div>
 
                 {papers.length === 0 ? (
-
                   <div className="p-5 text-center">
-
                     <FileText
                       size={25}
                       className="text-gray-600 mx-auto"
@@ -312,11 +433,8 @@ function ResearchAssistant({ papers = [] }) {
                     <p className="text-xs text-gray-600 mt-2">
                       Upload PDFs from the My Papers section.
                     </p>
-
                   </div>
-
                 ) : (
-
                   <>
                     <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
 
@@ -339,15 +457,16 @@ function ResearchAssistant({ papers = [] }) {
                     <div className="max-h-64 overflow-y-auto p-2">
 
                       {papers.map((paper, index) => {
-                        const isSelected = selectedPapers.includes(paper);
+                        const isSelected = selectedPapers.some(
+                          (item) => item.document_id === paper.document_id
+                        );
 
                         return (
                           <button
-                            key={`${paper.name}-${index}`}
+                            key={paper.document_id || index}
                             onClick={() => togglePaperSelection(paper)}
                             className="w-full flex items-center gap-3 p-3 rounded-lg text-left hover:bg-white/5 transition"
                           >
-
                             <div
                               className={`w-5 h-5 shrink-0 rounded-md border flex items-center justify-center ${
                                 isSelected
@@ -355,9 +474,7 @@ function ResearchAssistant({ papers = [] }) {
                                   : "border-white/20"
                               }`}
                             >
-                              {isSelected && (
-                                <Check size={13} />
-                              )}
+                              {isSelected && <Check size={13} />}
                             </div>
 
                             <FileText
@@ -366,27 +483,23 @@ function ResearchAssistant({ papers = [] }) {
                             />
 
                             <span className="text-xs text-gray-300 truncate">
-                              {paper.name}
+                              {paper.name || paper.filename || "Untitled PDF"}
                             </span>
-
                           </button>
                         );
                       })}
 
                     </div>
                   </>
-
                 )}
 
                 <div className="border-t border-white/10 p-3">
-
                   <button
                     onClick={() => setShowPaperSelector(false)}
                     className="w-full bg-violet-600 hover:bg-violet-500 rounded-lg py-2 text-xs font-medium transition"
                   >
                     Done
                   </button>
-
                 </div>
 
               </div>
@@ -399,21 +512,15 @@ function ResearchAssistant({ papers = [] }) {
         {/* SELECTED PAPERS SUMMARY */}
         {selectedPapers.length > 0 && (
           <div className="px-5 md:px-8 py-3 border-b border-white/5 bg-[#0c1020]">
-
             <div className="max-w-4xl mx-auto flex items-center gap-2 text-xs text-gray-400">
-
               <BookOpen size={14} className="text-violet-400 shrink-0" />
 
-              <span>
-                Selected for research:
-              </span>
+              <span>Selected for research:</span>
 
               <span className="text-violet-300">
                 {selectedPapers.length} paper(s)
               </span>
-
             </div>
-
           </div>
         )}
 
@@ -423,12 +530,10 @@ function ResearchAssistant({ papers = [] }) {
           <div className="max-w-4xl mx-auto px-5 md:px-8 py-10">
 
             {messages.length === 0 ? (
-
               /* WELCOME SCREEN */
               <div className="pt-8 md:pt-16">
 
                 <div className="text-center">
-
                   <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600/30 to-blue-500/20 border border-violet-400/20 flex items-center justify-center">
                     <BrainCircuit size={32} className="text-violet-400" />
                   </div>
@@ -451,7 +556,6 @@ function ResearchAssistant({ papers = [] }) {
                     Discover findings, compare methodologies and
                     explore evidence-backed insights.
                   </p>
-
                 </div>
 
                 {/* SUGGESTED QUESTIONS */}
@@ -487,49 +591,123 @@ function ResearchAssistant({ papers = [] }) {
                 </div>
 
               </div>
-
             ) : (
-
               /* CONVERSATION MESSAGES */
               <div className="space-y-8">
 
                 {messages.map((message, index) => (
-                  <div key={index} className="flex gap-4">
+                  <div
+                    key={message.id || index}
+                    className={`flex gap-4 ${
+                      message.role === "user" ? "flex-row-reverse" : ""
+                    }`}
+                  >
 
-                    <div className="w-9 h-9 shrink-0 rounded-xl bg-violet-500/15 text-violet-400 flex items-center justify-center">
-                      <BrainCircuit size={19} />
+                    <div className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center ${
+                      message.role === "user"
+                        ? "bg-blue-500/15 text-blue-400"
+                        : "bg-violet-500/15 text-violet-400"
+                    }`}>
+                      {message.role === "user" ? (
+                        <MessageSquare size={19} />
+                      ) : (
+                        <BrainCircuit size={19} />
+                      )}
                     </div>
 
                     <div className="flex-1 min-w-0">
 
                       <p className="text-xs text-gray-500 mb-2">
-                        Your research question
+                        {message.role === "user"
+                          ? "Your research question"
+                          : "ResearchLens AI"}
                       </p>
 
-                      <p className="text-gray-200 leading-relaxed">
-                        {message.content}
-                      </p>
+                      <div className={`rounded-xl p-4 ${
+                        message.role === "user"
+                          ? "bg-blue-500/[0.08] border border-blue-500/15"
+                          : "bg-[#111729] border border-white/10"
+                      }`}>
 
-                      <div className="mt-5 border border-amber-500/20 bg-amber-500/[0.05] rounded-xl p-4">
-
-                        <p className="text-amber-300 text-sm font-medium">
-                          Backend connection pending
-                        </p>
-
-                        <p className="text-gray-400 text-xs mt-2 leading-relaxed">
-                          Your question has been saved in this conversation.
-                          AI-generated answers and paper citations will appear
-                          here once the research engine API is connected.
-                        </p>
+                        {message.loading ? (
+                          <div className="flex items-center gap-3 text-violet-300 text-sm">
+                            <LoaderCircle size={18} className="animate-spin" />
+                            Analyzing your research papers...
+                          </div>
+                        ) : (
+                          <p className={`text-sm leading-7 whitespace-pre-wrap ${
+                            message.error ? "text-red-300" : "text-gray-200"
+                          }`}>
+                            {message.content}
+                          </p>
+                        )}
 
                       </div>
+
+                      {/* CITATIONS */}
+                      {message.citations?.length > 0 && (
+                        <div className="mt-5">
+
+                          <div className="flex items-center gap-2 text-sm text-violet-300 font-medium mb-3">
+                            <BookOpen size={16} />
+                            Sources ({message.citations.length})
+                          </div>
+
+                          <div className="space-y-2">
+
+                            {message.citations.map((citation) => (
+                              <div
+                                key={citation.citation_number}
+                                className="flex items-start gap-3 p-3 rounded-xl bg-[#111729] border border-white/10"
+                              >
+
+                                <span className="w-7 h-7 shrink-0 rounded-lg bg-violet-500/15 text-violet-300 flex items-center justify-center text-xs font-semibold">
+                                  [{citation.citation_number}]
+                                </span>
+
+                                <div className="flex-1 min-w-0">
+
+                                  <p className="text-xs text-gray-200 font-medium break-words">
+                                    {citation.filename}
+                                  </p>
+
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    Page {citation.page_start}
+                                    {citation.page_end !== citation.page_start
+                                      ? `–${citation.page_end}`
+                                      : ""}
+                                    {" · "}
+                                    {citation.section || "Unidentified section"}
+                                  </p>
+
+                                  <a
+                                    href={`/api/documents/${encodeURIComponent(citation.document_id)}/download`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 mt-2"
+                                  >
+                                    Open source PDF
+                                    <ExternalLink size={12} />
+                                  </a>
+
+                                </div>
+                              </div>
+                            ))}
+
+                          </div>
+
+                          <p className="text-xs text-gray-600 mt-3">
+                            Based on {message.evidenceCount} retrieved evidence passages.
+                          </p>
+
+                        </div>
+                      )}
 
                     </div>
                   </div>
                 ))}
 
               </div>
-
             )}
 
           </div>
@@ -553,12 +731,13 @@ function ResearchAssistant({ papers = [] }) {
                       !event.shiftKey
                     ) {
                       event.preventDefault();
-                      handleSubmit(event);
+                      event.currentTarget.form?.requestSubmit();
                     }
                   }}
                   placeholder="Ask anything about your research papers..."
                   rows={2}
-                  className="w-full bg-transparent resize-none outline-none text-sm text-white placeholder:text-gray-500 p-2"
+                  disabled={loading}
+                  className="w-full bg-transparent resize-none outline-none text-sm text-white placeholder:text-gray-500 p-2 disabled:opacity-50"
                 />
 
                 <div className="flex items-center justify-between mt-2 px-2">
@@ -579,11 +758,15 @@ function ResearchAssistant({ papers = [] }) {
 
                   <button
                     type="submit"
-                    disabled={!question.trim()}
+                    disabled={!question.trim() || loading}
                     className="bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed p-3 rounded-xl transition"
                     title="Send question"
                   >
-                    <Send size={17} />
+                    {loading ? (
+                      <LoaderCircle size={17} className="animate-spin" />
+                    ) : (
+                      <Send size={17} />
+                    )}
                   </button>
 
                 </div>
@@ -592,8 +775,7 @@ function ResearchAssistant({ papers = [] }) {
             </form>
 
             <p className="text-center text-gray-600 text-[11px] mt-3">
-              AI-generated answers and source citations will be enabled
-              after backend integration.
+              AI-generated answers grounded in your selected research papers, with source citations.
             </p>
 
           </div>

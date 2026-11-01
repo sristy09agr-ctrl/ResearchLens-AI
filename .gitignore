@@ -11,3 +11,4 @@ data/researchlens.db
 
 # Environment variables
 .env
+.env.save

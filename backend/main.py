@@ -1,8 +1,12 @@
 from fastapi.responses import HTMLResponse, FileResponse
 import hashlib
+import os
 from pathlib import Path
 from uuid import uuid4
 from typing import Annotated
+
+from dotenv import load_dotenv
+from google import genai
 
 from fastapi import (
     FastAPI,
@@ -11,10 +15,14 @@ from fastapi import (
     HTTPException
 )
 
-from pydantic import WithJsonSchema
+from pydantic import BaseModel, Field, WithJsonSchema
 
 from modules.document_processor import extract_text_from_pdf
 from modules.chunking import chunk_pages
+
+from modules.embeddings import EmbeddingGenerator
+from modules.retrieval import HybridRetriever
+from modules.reranking import CrossEncoderReranker
 
 from modules.database import (
     initialize_database,
@@ -27,41 +35,40 @@ from modules.database import (
 )
 
 
-
-
-# --------------------------------------------------
-# SWAGGER FILE UPLOAD TYPE
-# --------------------------------------------------
-
 PDFUpload = Annotated[
     FastAPIUploadFile,
-    WithJsonSchema({
-        "type": "string",
-        "format": "binary"
-    })
+    WithJsonSchema({"type": "string", "format": "binary"})
 ]
 
 
-# --------------------------------------------------
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1, le=20)
+    candidate_k: int = Field(default=20, ge=1, le=100)
+    alpha: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class AskRequest(BaseModel):
+    query: str = Field(min_length=1)
+    document_ids: list[str] = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1, le=10)
+    candidate_k: int = Field(default=30, ge=1, le=100)
+    alpha: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 # PROJECT DIRECTORIES
-# --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR / ".env")
 
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-
-# --------------------------------------------------
-# UPLOAD CONFIGURATION
-# --------------------------------------------------
-
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB per PDF
+MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
-# --------------------------------------------------
 # FASTAPI APPLICATION
-# --------------------------------------------------
 
 app = FastAPI(
     title="ResearchLens AI",
@@ -70,34 +77,49 @@ app = FastAPI(
 )
 
 
-# Initialize SQLite database when backend starts
+# MODEL CACHES
+
+_retriever = None
+_reranker = None
+
 initialize_database()
 
 
-# --------------------------------------------------
+# BUILD HYBRID RETRIEVAL INDEX
+
+def build_retriever():
+    all_chunks = []
+
+    documents = get_all_documents()
+
+    for document in documents:
+        chunks = get_document_chunks(document["document_id"])
+
+        for chunk in chunks:
+            chunk["document_id"] = document["document_id"]
+            chunk["filename"] = document["filename"]
+            all_chunks.append(chunk)
+
+    return HybridRetriever(all_chunks)
+
+
 # HOME ENDPOINT
-# --------------------------------------------------
 
 @app.get("/")
 def home():
-
     return {
         "status": "success",
         "message": "ResearchLens AI Backend is Running!"
     }
 
 
-# --------------------------------------------------
 # MULTIPLE PDF UPLOAD ENDPOINT
-# --------------------------------------------------
 
 @app.post("/upload-pdf")
-async def upload_pdf(
-    files: list[PDFUpload] = File(...)
-):
+async def upload_pdf(files: list[PDFUpload] = File(...)):
+    global _retriever
 
     if not files:
-
         raise HTTPException(
             status_code=400,
             detail="Please upload at least one PDF."
@@ -108,7 +130,6 @@ async def upload_pdf(
     failed_documents = []
 
     for file in files:
-
         original_filename = (
             (file.filename or "uploaded.pdf")
             .replace("\\", "/")
@@ -118,47 +139,34 @@ async def upload_pdf(
         file_path = None
 
         try:
-
-            # Check file extension
             if not original_filename.lower().endswith(".pdf"):
-
                 failed_documents.append({
                     "filename": original_filename,
                     "error": "Only PDF files are allowed."
                 })
-
                 continue
 
-            # Read PDF content
             pdf_bytes = await file.read(MAX_FILE_SIZE + 1)
 
             if not pdf_bytes:
-
                 failed_documents.append({
                     "filename": original_filename,
                     "error": "The uploaded file is empty."
                 })
-
                 continue
 
-            # Check individual file size
             if len(pdf_bytes) > MAX_FILE_SIZE:
-
                 failed_documents.append({
                     "filename": original_filename,
                     "error": "PDF exceeds the 20 MB limit."
                 })
-
                 continue
 
-            # Generate SHA-256 hash
             file_hash = hashlib.sha256(pdf_bytes).hexdigest()
 
-            # Check whether the PDF already exists
             existing_document = find_document_by_hash(file_hash)
 
             if existing_document:
-
                 duplicate_documents.append({
                     "filename": original_filename,
                     "duplicate_of": {
@@ -166,48 +174,30 @@ async def upload_pdf(
                         "filename": existing_document["filename"]
                     }
                 })
-
                 continue
 
-            # Extract text and sections from PDF
             try:
-
                 pages = extract_text_from_pdf(pdf_bytes)
-
             except ValueError as error:
-
                 failed_documents.append({
                     "filename": original_filename,
                     "error": str(error)
                 })
-
                 continue
 
-            # Generate chunks
-            chunks = chunk_pages(
-                pages,
-                original_filename
-            )
+            chunks = chunk_pages(pages, original_filename)
 
-            # Generate unique document ID
             document_id = uuid4().hex
 
-            # Attach document ID to every chunk
             for chunk in chunks:
-
                 chunk["document_id"] = document_id
 
-            # Save original PDF
             stored_filename = f"{document_id}.pdf"
-
             file_path = UPLOAD_DIR / stored_filename
 
             try:
-
                 file_path.write_bytes(pdf_bytes)
-
             except OSError:
-
                 if file_path.exists():
                     file_path.unlink()
 
@@ -215,10 +205,8 @@ async def upload_pdf(
                     "filename": original_filename,
                     "error": "Could not save this PDF."
                 })
-
                 continue
 
-            # Prepare document information
             document_data = {
                 "document_id": document_id,
                 "filename": original_filename,
@@ -230,16 +218,9 @@ async def upload_pdf(
                 "total_chunks": len(chunks)
             }
 
-            # Save document and chunks into SQLite
             try:
-
-                save_document_and_chunks(
-                    document_data,
-                    chunks
-                )
-
+                save_document_and_chunks(document_data, chunks)
             except Exception:
-
                 if file_path.exists():
                     file_path.unlink()
 
@@ -250,10 +231,8 @@ async def upload_pdf(
                         "to database."
                     )
                 })
-
                 continue
 
-            # Add successful document to response
             documents.append({
                 "document_id": document_id,
                 "filename": original_filename,
@@ -264,13 +243,12 @@ async def upload_pdf(
             })
 
         finally:
-
             await file.close()
 
-    # Return an error if nothing was processed
-    # and nothing was identified as a duplicate
-    if not documents and not duplicate_documents:
+    if documents:
+        _retriever = None
 
+    if not documents and not duplicate_documents:
         raise HTTPException(
             status_code=400,
             detail={
@@ -279,55 +257,30 @@ async def upload_pdf(
             }
         )
 
-    # Final response
     return {
-        "status": (
-            "success"
-            if not failed_documents
-            else "partial_success"
-        ),
-
+        "status": "success" if not failed_documents else "partial_success",
         "total_files_received": len(files),
-
         "processed_files": len(documents),
-
         "duplicate_files": len(duplicate_documents),
-
         "failed_files": len(failed_documents),
-
-        "total_pages": sum(
-            document["total_pages"]
-            for document in documents
-        ),
-
-        "total_chunks": sum(
-            document["total_chunks"]
-            for document in documents
-        ),
-
+        "total_pages": sum(d["total_pages"] for d in documents),
+        "total_chunks": sum(d["total_chunks"] for d in documents),
         "documents": documents,
-
         "duplicate_documents": duplicate_documents,
-
         "failed_documents": failed_documents
     }
 
 
-# --------------------------------------------------
 # MULTIPLE PDF UPLOAD PAGE
-# --------------------------------------------------
 
 @app.get("/upload-page", response_class=HTMLResponse)
 def upload_page():
-
     return """
     <!DOCTYPE html>
     <html lang="en">
-
     <head>
         <meta charset="UTF-8">
         <title>ResearchLens AI - Upload Papers</title>
-
         <style>
             body {
                 font-family: Arial, sans-serif;
@@ -335,7 +288,6 @@ def upload_page():
                 padding: 40px;
                 text-align: center;
             }
-
             .container {
                 max-width: 650px;
                 margin: 50px auto;
@@ -344,7 +296,6 @@ def upload_page():
                 border-radius: 12px;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.07);
             }
-
             button {
                 margin-top: 20px;
                 padding: 12px 25px;
@@ -354,7 +305,6 @@ def upload_page():
                 border-radius: 7px;
                 cursor: pointer;
             }
-
             #result {
                 margin-top: 25px;
                 text-align: left;
@@ -363,109 +313,69 @@ def upload_page():
             }
         </style>
     </head>
-
     <body>
-
         <div class="container">
-
             <h1>ResearchLens AI</h1>
             <h3>Upload Research Papers</h3>
-
             <p>Select multiple PDF files together.</p>
-
-            <input
-                type="file"
-                id="pdfFiles"
-                accept=".pdf,application/pdf"
-                multiple
-            >
-
+            <input type="file" id="pdfFiles"
+                   accept=".pdf,application/pdf" multiple>
             <br>
-
-            <button onclick="uploadFiles()">
-                Upload All PDFs
-            </button>
-
+            <button onclick="uploadFiles()">Upload All PDFs</button>
             <div id="result"></div>
-
         </div>
 
         <script>
-
             async function uploadFiles() {
-
                 const input = document.getElementById("pdfFiles");
-
                 const files = Array.from(input.files);
-
                 const result = document.getElementById("result");
 
                 if (files.length === 0) {
-
                     alert("Please select at least one PDF.");
-
                     return;
                 }
 
                 for (const file of files) {
-
                     if (
                         !file.name.toLowerCase().endsWith(".pdf") ||
                         file.size > 20 * 1024 * 1024
                     ) {
                         alert(
-                            "Invalid PDF or file larger than 20 MB: "
-                            + file.name
+                            "Invalid PDF or file larger than 20 MB: " +
+                            file.name
                         );
-
                         return;
                     }
                 }
 
                 const formData = new FormData();
+                files.forEach(file => formData.append("files", file));
 
-                files.forEach(file => {
-                    formData.append("files", file);
-                });
-
-                result.textContent =
-                    "Uploading and processing PDFs...";
+                result.textContent = "Uploading and processing PDFs...";
 
                 try {
-
                     const response = await fetch("/upload-pdf", {
                         method: "POST",
                         body: formData
                     });
 
                     const data = await response.json();
-
-                    result.textContent =
-                        JSON.stringify(data, null, 2);
-
+                    result.textContent = JSON.stringify(data, null, 2);
                 } catch (error) {
-
-                    result.textContent =
-                        "Upload failed: " + error.message;
-
+                    result.textContent = "Upload failed: " + error.message;
                 }
             }
-
         </script>
-
     </body>
     </html>
     """
 
 
-
-# --------------------------------------------------
 # LIST ALL UPLOADED DOCUMENTS
-# --------------------------------------------------
 
 @app.get("/documents")
 def list_documents():
-
     documents = get_all_documents()
 
     return {
@@ -486,17 +396,13 @@ def list_documents():
     }
 
 
-# --------------------------------------------------
 # GET ONE DOCUMENT'S DETAILS
-# --------------------------------------------------
 
 @app.get("/documents/{document_id}")
 def document_details(document_id: str):
-
     document = get_document(document_id)
 
     if not document:
-
         raise HTTPException(
             status_code=404,
             detail="Document not found."
@@ -515,17 +421,13 @@ def document_details(document_id: str):
     }
 
 
-# --------------------------------------------------
 # GET ALL CHUNKS OF A DOCUMENT
-# --------------------------------------------------
 
 @app.get("/documents/{document_id}/chunks")
 def document_chunks(document_id: str):
-
     document = get_document(document_id)
 
     if not document:
-
         raise HTTPException(
             status_code=404,
             detail="Document not found."
@@ -542,17 +444,13 @@ def document_chunks(document_id: str):
     }
 
 
-# --------------------------------------------------
 # DOWNLOAD ORIGINAL PDF
-# --------------------------------------------------
 
 @app.get("/documents/{document_id}/download")
 def download_document(document_id: str):
-
     document = get_document(document_id)
 
     if not document:
-
         raise HTTPException(
             status_code=404,
             detail="Document not found."
@@ -562,20 +460,15 @@ def download_document(document_id: str):
         BASE_DIR / document["stored_path"]
     ).resolve()
 
-    # Ensure the stored path belongs to the upload folder
     try:
-
         file_path.relative_to(UPLOAD_DIR.resolve())
-
     except ValueError:
-
         raise HTTPException(
             status_code=400,
             detail="Invalid document storage path."
         )
 
     if not file_path.is_file():
-
         raise HTTPException(
             status_code=404,
             detail="Original PDF file not found on disk."
@@ -588,17 +481,15 @@ def download_document(document_id: str):
     )
 
 
-# --------------------------------------------------
 # DELETE DOCUMENT AND ITS CHUNKS
-# --------------------------------------------------
 
 @app.delete("/documents/{document_id}")
 def remove_document(document_id: str):
+    global _retriever
 
     document = get_document(document_id)
 
     if not document:
-
         raise HTTPException(
             status_code=404,
             detail="Document not found."
@@ -608,40 +499,31 @@ def remove_document(document_id: str):
         BASE_DIR / document["stored_path"]
     ).resolve()
 
-    # Ensure the stored path belongs to the upload folder
     try:
-
         file_path.relative_to(UPLOAD_DIR.resolve())
-
     except ValueError:
-
         raise HTTPException(
             status_code=400,
             detail="Invalid document storage path."
         )
 
-    # Deleting the document also deletes its chunks
-    # because the database uses ON DELETE CASCADE
     deleted = delete_document(document_id)
 
     if not deleted:
-
         raise HTTPException(
             status_code=404,
             detail="Document could not be deleted."
         )
 
+    _retriever = None
+
     file_deleted = False
 
     if file_path.is_file():
-
         try:
-
             file_path.unlink()
             file_deleted = True
-
         except OSError:
-
             file_deleted = False
 
     return {
@@ -650,4 +532,276 @@ def remove_document(document_id: str):
         "document_id": document_id,
         "filename": document["filename"],
         "file_deleted": file_deleted
+    }
+
+
+# RESEARCH QUESTION SEARCH ENDPOINT
+
+@app.post("/search")
+def search_research_papers(request: SearchRequest):
+    global _retriever, _reranker
+
+    query = request.query.strip()
+
+    if not query:
+        raise HTTPException(
+            status_code=400,
+            detail="Search query cannot be empty."
+        )
+
+    if _retriever is None:
+        _retriever = build_retriever()
+
+    if not _retriever.chunks:
+        return {
+            "status": "success",
+            "query": query,
+            "total_candidates": 0,
+            "returned_results": 0,
+            "results": []
+        }
+
+    candidate_count = max(request.candidate_k, request.top_k)
+
+    candidates = _retriever.retrieve(
+        query,
+        top_k=candidate_count,
+        alpha=request.alpha
+    )
+
+    if not candidates:
+        return {
+            "status": "success",
+            "query": query,
+            "total_candidates": 0,
+            "returned_results": 0,
+            "results": []
+        }
+
+    if _reranker is None:
+        _reranker = CrossEncoderReranker()
+
+    results = _reranker.rerank(
+        query,
+        candidates,
+        top_k=request.top_k
+    )
+
+    return {
+        "status": "success",
+        "query": query,
+        "total_candidates": len(candidates),
+        "returned_results": len(results),
+        "results": results
+    }
+
+
+# GEMINI-POWERED RESEARCH ANSWER ENDPOINT
+
+@app.post("/ask")
+def answer_research_question(request: AskRequest):
+    global _reranker
+
+    query = request.query.strip()
+
+    if not query:
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty."
+        )
+
+    selected_ids = list(dict.fromkeys(request.document_ids))
+
+    selected_chunks = []
+    selected_documents = []
+
+    # Load chunks only from selected papers.
+    for document_id in selected_ids:
+        document = get_document(document_id)
+
+        if not document:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Selected document not found: {document_id}"
+            )
+
+        selected_documents.append(document)
+
+        chunks = get_document_chunks(document_id)
+
+        for chunk in chunks:
+            chunk["document_id"] = document_id
+            chunk["filename"] = document["filename"]
+            selected_chunks.append(chunk)
+
+    if not selected_chunks:
+        return {
+            "status": "success",
+            "query": query,
+            "answer": (
+                "The selected papers do not contain any extractable text "
+                "to answer this question."
+            ),
+            "citations": []
+        }
+
+    # Retrieve evidence from the selected papers.
+    try:
+        selected_retriever = HybridRetriever(selected_chunks)
+
+        candidates = selected_retriever.retrieve(
+            query,
+            top_k=max(request.candidate_k, request.top_k),
+            alpha=request.alpha
+        )
+
+        if not candidates:
+            return {
+                "status": "success",
+                "query": query,
+                "answer": (
+                    "I could not find relevant passages in the selected "
+                    "papers for this question."
+                ),
+                "citations": []
+            }
+
+        if _reranker is None:
+            _reranker = CrossEncoderReranker()
+
+        results = _reranker.rerank(
+            query,
+            candidates,
+            top_k=request.top_k
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Evidence retrieval failed. Please try again."
+        )
+
+    if not results:
+        return {
+            "status": "success",
+            "query": query,
+            "answer": (
+                "I could not find relevant passages in the selected "
+                "papers for this question."
+            ),
+            "citations": []
+        }
+
+    # Prepare numbered evidence passages and citations.
+    context_parts = []
+    citations = []
+
+    for index, result in enumerate(results, start=1):
+        citation = {
+            "citation_number": index,
+            "document_id": result.get("document_id"),
+            "filename": result.get("filename", "Unknown paper"),
+            "chunk_id": result.get("chunk_id"),
+            "page_start": result.get("page_start"),
+            "page_end": result.get("page_end"),
+            "section": result.get("section")
+        }
+
+        citations.append(citation)
+
+        page_start = citation["page_start"]
+        page_end = citation["page_end"]
+
+        if page_start is not None and page_end is not None:
+            page_label = (
+                f"Pages {page_start}-{page_end}"
+                if page_start != page_end
+                else f"Page {page_start}"
+            )
+        else:
+            page_label = "Page not available"
+
+        passage_text = (
+            result.get("text") or result.get("paragraph") or ""
+        )
+
+        context_parts.append(
+            f"[{index}] Paper: {citation['filename']}\n"
+            f"Location: {page_label}\n"
+            f"Section: {citation['section'] or 'Not specified'}\n"
+            f"Passage:\n{passage_text}"
+        )
+
+    context = "\n\n".join(context_parts)
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "GEMINI_API_KEY was not found. Check the project root "
+                ".env file."
+            )
+        )
+
+    prompt = f"""
+You are ResearchLens AI, an assistant for scientific literature analysis.
+
+Answer the user's question using ONLY the evidence passages provided below.
+
+Rules:
+1. Do not use outside knowledge to make claims about these papers.
+2. Do not invent findings, methods, limitations, statistics, or citations.
+3. Cite important factual claims using passage numbers, like [1] or [2].
+4. If multiple papers support a claim, cite each relevant passage.
+5. If the evidence is insufficient, clearly say what cannot be established.
+6. When comparing papers, distinguish their individual findings.
+7. Write a clear, structured answer.
+8. Do not cite a passage unless it supports the claim.
+
+USER QUESTION:
+{query}
+
+EVIDENCE PASSAGES:
+{context}
+
+Write the evidence-grounded answer now.
+"""
+
+    try:
+        client = genai.Client(api_key=api_key)
+
+        response = client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=prompt
+        )
+
+        answer = response.text
+
+        if not answer:
+            raise ValueError("Gemini returned an empty response.")
+
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The AI answer could not be generated. Check the Gemini "
+                "API configuration and try again."
+            )
+        )
+
+    return {
+        "status": "success",
+        "query": query,
+        "selected_documents": [
+            {
+                "document_id": document["document_id"],
+                "filename": document["filename"]
+            }
+            for document in selected_documents
+        ],
+        "total_evidence_passages": len(results),
+        "answer": answer,
+        "citations": citations
     }
