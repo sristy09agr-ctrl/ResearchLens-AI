@@ -17,6 +17,203 @@ import {
   ExternalLink
 } from "lucide-react";
 
+// ==========================================
+// MARKDOWN FORMATTING
+// ==========================================
+
+function cleanMarkdown(text) {
+  return String(text || "")
+    .replace(/\\([#*_\-`])/g, "$1")
+    .replace(/\\\./g, ".")
+    .replace(/\\!/g, "!");
+}
+
+function renderInline(text, keyPrefix = "inline") {
+  const parts = text.split(
+    /(\*\*.*?\*\*|__.*?__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g
+  );
+
+  return parts.map((part, index) => {
+    const key = `${keyPrefix}-${index}`;
+
+    if (
+      (part.startsWith("**") && part.endsWith("**")) ||
+      (part.startsWith("__") && part.endsWith("__"))
+    ) {
+      return <strong key={key}>{part.slice(2, -2)}</strong>;
+    }
+
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code
+          key={key}
+          className="bg-black/30 text-violet-300 px-1.5 py-0.5 rounded text-xs"
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+
+    if (
+      (part.startsWith("*") && part.endsWith("*")) ||
+      (part.startsWith("_") && part.endsWith("_"))
+    ) {
+      return <em key={key}>{part.slice(1, -1)}</em>;
+    }
+
+    return part;
+  });
+}
+
+function MarkdownContent({ content }) {
+  const lines = cleanMarkdown(content).split("\n");
+  const elements = [];
+
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index].trim();
+
+    if (!line) {
+      index++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) {
+      elements.push(
+        <hr key={`hr-${index}`} className="border-white/10 my-5" />
+      );
+      index++;
+      continue;
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+
+      const headingClasses = {
+        1: "text-xl font-bold",
+        2: "text-lg font-bold",
+        3: "text-base font-semibold",
+        4: "text-sm font-semibold",
+        5: "text-sm font-medium",
+        6: "text-sm font-medium"
+      };
+
+      elements.push(
+        <div
+          key={`heading-${index}`}
+          className={`${headingClasses[level]} text-white mt-5 mb-3`}
+        >
+          {renderInline(headingMatch[2], `heading-${index}`)}
+        </div>
+      );
+
+      index++;
+      continue;
+    }
+
+    // Unordered lists
+    if (/^[-*+]\s+/.test(line)) {
+      const items = [];
+
+      while (
+        index < lines.length &&
+        /^[-*+]\s+/.test(lines[index].trim())
+      ) {
+        const item = lines[index]
+          .trim()
+          .replace(/^[-*+]\s+/, "");
+
+        items.push(
+          <li key={`ul-${index}`}>
+            {renderInline(item, `ul-${index}`)}
+          </li>
+        );
+
+        index++;
+      }
+
+      elements.push(
+        <ul
+          key={`list-${index}`}
+          className="list-disc pl-6 space-y-2 my-3 text-gray-200"
+        >
+          {items}
+        </ul>
+      );
+
+      continue;
+    }
+
+    // Numbered lists
+    if (/^\d+[.)]\s+/.test(line)) {
+      const items = [];
+
+      while (
+        index < lines.length &&
+        /^\d+[.)]\s+/.test(lines[index].trim())
+      ) {
+        const item = lines[index]
+          .trim()
+          .replace(/^\d+[.)]\s+/, "");
+
+        items.push(
+          <li key={`ol-${index}`}>
+            {renderInline(item, `ol-${index}`)}
+          </li>
+        );
+
+        index++;
+      }
+
+      elements.push(
+        <ol
+          key={`ordered-${index}`}
+          className="list-decimal pl-6 space-y-2 my-3 text-gray-200"
+        >
+          {items}
+        </ol>
+      );
+
+      continue;
+    }
+
+    // Paragraphs
+    const paragraph = [line];
+    index++;
+
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|(-{3,}|\*{3,}|_{3,})$)/.test(
+        lines[index].trim()
+      )
+    ) {
+      paragraph.push(lines[index].trim());
+      index++;
+    }
+
+    elements.push(
+      <p
+        key={`paragraph-${index}`}
+        className="text-gray-200 leading-7 my-3"
+      >
+        {renderInline(paragraph.join(" "), `paragraph-${index}`)}
+      </p>
+    );
+  }
+
+  return <div className="text-sm">{elements}</div>;
+}
+
+// ==========================================
+// MAIN RESEARCH ASSISTANT
+// ==========================================
+
 function ResearchAssistant({ papers = [] }) {
   const [question, setQuestion] = useState("");
   const [conversations, setConversations] = useState([]);
@@ -28,21 +225,25 @@ function ResearchAssistant({ papers = [] }) {
 
   const previousPapersRef = useRef([]);
 
-  // Keep selected papers synchronized with My Papers.
+  // Synchronize selected papers with My Papers.
   useEffect(() => {
     const previousPapers = previousPapersRef.current;
 
     const newlyAddedPapers = papers.filter(
-      (paper) => !previousPapers.some(
-        (previous) => previous.document_id === paper.document_id
-      )
+      (paper) =>
+        !previousPapers.some(
+          (previous) =>
+            previous.document_id === paper.document_id
+        )
     );
 
     setSelectedPapers((previous) => {
       const remainingSelectedPapers = previous.filter(
-        (paper) => papers.some(
-          (current) => current.document_id === paper.document_id
-        )
+        (paper) =>
+          papers.some(
+            (current) =>
+              current.document_id === paper.document_id
+          )
       );
 
       return [...remainingSelectedPapers, ...newlyAddedPapers];
@@ -52,7 +253,8 @@ function ResearchAssistant({ papers = [] }) {
   }, [papers]);
 
   const activeConversation = conversations.find(
-    (conversation) => conversation.id === activeConversationId
+    (conversation) =>
+      conversation.id === activeConversationId
   );
 
   const messages = activeConversation?.messages || [];
@@ -82,7 +284,9 @@ function ResearchAssistant({ papers = [] }) {
     if (loading && activeConversationId === id) return;
 
     setConversations((previous) =>
-      previous.filter((conversation) => conversation.id !== id)
+      previous.filter(
+        (conversation) => conversation.id !== id
+      )
     );
 
     if (activeConversationId === id) {
@@ -93,11 +297,15 @@ function ResearchAssistant({ papers = [] }) {
 
   const togglePaperSelection = (paper) => {
     setSelectedPapers((previous) => {
-      if (previous.some(
-        (item) => item.document_id === paper.document_id
-      )) {
+      if (
+        previous.some(
+          (item) =>
+            item.document_id === paper.document_id
+        )
+      ) {
         return previous.filter(
-          (item) => item.document_id !== paper.document_id
+          (item) =>
+            item.document_id !== paper.document_id
         );
       }
 
@@ -113,7 +321,10 @@ function ResearchAssistant({ papers = [] }) {
     setSelectedPapers([]);
   };
 
-  // Send the research question to the FastAPI backend.
+  // ==========================================
+  // ASK AI API
+  // ==========================================
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
@@ -154,7 +365,7 @@ function ResearchAssistant({ papers = [] }) {
       loading: true
     };
 
-    // Create a new conversation or add to the existing one.
+    // Create a new conversation or update an existing one.
     if (activeConversationId === null) {
       const newConversation = {
         id: conversationId,
@@ -218,27 +429,31 @@ function ResearchAssistant({ papers = [] }) {
 
       if (data.status !== "success") {
         throw new Error(
-          data.message || "The research engine could not answer."
+          data.message ||
+            "The research engine could not answer."
         );
       }
 
-      // Replace the loading message with the actual answer.
+      // Replace loading message with the actual answer.
       setConversations((previous) =>
         previous.map((conversation) =>
           conversation.id === conversationId
             ? {
                 ...conversation,
-                messages: conversation.messages.map((message) =>
-                  message.id === assistantMessageId
-                    ? {
-                        ...message,
-                        content: data.answer,
-                        citations: data.citations || [],
-                        evidenceCount: data.total_evidence_passages,
-                        selectedDocuments: data.selected_documents || [],
-                        loading: false
-                      }
-                    : message
+                messages: conversation.messages.map(
+                  (message) =>
+                    message.id === assistantMessageId
+                      ? {
+                          ...message,
+                          content: data.answer,
+                          citations: data.citations || [],
+                          evidenceCount:
+                            data.total_evidence_passages,
+                          selectedDocuments:
+                            data.selected_documents || [],
+                          loading: false
+                        }
+                      : message
                 )
               }
             : conversation
@@ -246,22 +461,26 @@ function ResearchAssistant({ papers = [] }) {
       );
 
     } catch (error) {
-      console.error("Research Assistant API error:", error);
+      console.error(
+        "Research Assistant API error:",
+        error
+      );
 
       setConversations((previous) =>
         previous.map((conversation) =>
           conversation.id === conversationId
             ? {
                 ...conversation,
-                messages: conversation.messages.map((message) =>
-                  message.id === assistantMessageId
-                    ? {
-                        ...message,
-                        content: error.message,
-                        error: true,
-                        loading: false
-                      }
-                    : message
+                messages: conversation.messages.map(
+                  (message) =>
+                    message.id === assistantMessageId
+                      ? {
+                          ...message,
+                          content: error.message,
+                          error: true,
+                          loading: false
+                        }
+                      : message
                 )
               }
             : conversation
@@ -272,6 +491,10 @@ function ResearchAssistant({ papers = [] }) {
       setLoading(false);
     }
   };
+
+  // ==========================================
+  // UI
+  // ==========================================
 
   return (
     <div className="flex min-h-[calc(100vh-80px)] bg-[#080b14] text-white">
@@ -331,12 +554,17 @@ function ResearchAssistant({ papers = [] }) {
                 }`}
               >
                 <button
-                  onClick={() => openConversation(conversation.id)}
+                  onClick={() =>
+                    openConversation(conversation.id)
+                  }
                   className="flex-1 min-w-0 text-left px-3 py-3 text-sm truncate"
                   title={conversation.title}
                 >
                   <span className="flex items-center gap-2">
-                    <MessageSquare size={15} className="shrink-0" />
+                    <MessageSquare
+                      size={15}
+                      className="shrink-0"
+                    />
                     <span className="truncate">
                       {conversation.title}
                     </span>
@@ -344,7 +572,9 @@ function ResearchAssistant({ papers = [] }) {
                 </button>
 
                 <button
-                  onClick={() => deleteConversation(conversation.id)}
+                  onClick={() =>
+                    deleteConversation(conversation.id)
+                  }
                   className="p-2 mr-1 text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition"
                   title="Delete conversation"
                 >
@@ -391,10 +621,15 @@ function ResearchAssistant({ papers = [] }) {
           <div className="relative">
 
             <button
-              onClick={() => setShowPaperSelector((previous) => !previous)}
+              onClick={() =>
+                setShowPaperSelector((previous) => !previous)
+              }
               className="flex items-center gap-2 text-xs text-gray-300 border border-white/10 hover:border-violet-400/40 bg-[#111729] rounded-lg px-3 py-2 transition"
             >
-              <FileText size={15} className="text-violet-400" />
+              <FileText
+                size={15}
+                className="text-violet-400"
+              />
 
               Papers: {papers.length}
 
@@ -458,13 +693,16 @@ function ResearchAssistant({ papers = [] }) {
 
                       {papers.map((paper, index) => {
                         const isSelected = selectedPapers.some(
-                          (item) => item.document_id === paper.document_id
+                          (item) =>
+                            item.document_id === paper.document_id
                         );
 
                         return (
                           <button
                             key={paper.document_id || index}
-                            onClick={() => togglePaperSelection(paper)}
+                            onClick={() =>
+                              togglePaperSelection(paper)
+                            }
                             className="w-full flex items-center gap-3 p-3 rounded-lg text-left hover:bg-white/5 transition"
                           >
                             <div
@@ -483,7 +721,9 @@ function ResearchAssistant({ papers = [] }) {
                             />
 
                             <span className="text-xs text-gray-300 truncate">
-                              {paper.name || paper.filename || "Untitled PDF"}
+                              {paper.name ||
+                                paper.filename ||
+                                "Untitled PDF"}
                             </span>
                           </button>
                         );
@@ -495,7 +735,9 @@ function ResearchAssistant({ papers = [] }) {
 
                 <div className="border-t border-white/10 p-3">
                   <button
-                    onClick={() => setShowPaperSelector(false)}
+                    onClick={() =>
+                      setShowPaperSelector(false)
+                    }
                     className="w-full bg-violet-600 hover:bg-violet-500 rounded-lg py-2 text-xs font-medium transition"
                   >
                     Done
@@ -513,7 +755,10 @@ function ResearchAssistant({ papers = [] }) {
         {selectedPapers.length > 0 && (
           <div className="px-5 md:px-8 py-3 border-b border-white/5 bg-[#0c1020]">
             <div className="max-w-4xl mx-auto flex items-center gap-2 text-xs text-gray-400">
-              <BookOpen size={14} className="text-violet-400 shrink-0" />
+              <BookOpen
+                size={14}
+                className="text-violet-400 shrink-0"
+              />
 
               <span>Selected for research:</span>
 
@@ -530,12 +775,16 @@ function ResearchAssistant({ papers = [] }) {
           <div className="max-w-4xl mx-auto px-5 md:px-8 py-10">
 
             {messages.length === 0 ? (
+
               /* WELCOME SCREEN */
               <div className="pt-8 md:pt-16">
 
                 <div className="text-center">
                   <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600/30 to-blue-500/20 border border-violet-400/20 flex items-center justify-center">
-                    <BrainCircuit size={32} className="text-violet-400" />
+                    <BrainCircuit
+                      size={32}
+                      className="text-violet-400"
+                    />
                   </div>
 
                   <p className="text-violet-400 text-xs uppercase tracking-widest font-semibold mt-7">
@@ -562,7 +811,10 @@ function ResearchAssistant({ papers = [] }) {
                 <div className="mt-14">
 
                   <div className="flex items-center gap-2 text-gray-400 text-sm mb-4">
-                    <Sparkles size={16} className="text-violet-400" />
+                    <Sparkles
+                      size={16}
+                      className="text-violet-400"
+                    />
                     Suggested research questions
                   </div>
 
@@ -591,7 +843,9 @@ function ResearchAssistant({ papers = [] }) {
                 </div>
 
               </div>
+
             ) : (
+
               /* CONVERSATION MESSAGES */
               <div className="space-y-8">
 
@@ -599,15 +853,19 @@ function ResearchAssistant({ papers = [] }) {
                   <div
                     key={message.id || index}
                     className={`flex gap-4 ${
-                      message.role === "user" ? "flex-row-reverse" : ""
+                      message.role === "user"
+                        ? "flex-row-reverse"
+                        : ""
                     }`}
                   >
 
-                    <div className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center ${
-                      message.role === "user"
-                        ? "bg-blue-500/15 text-blue-400"
-                        : "bg-violet-500/15 text-violet-400"
-                    }`}>
+                    <div
+                      className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center ${
+                        message.role === "user"
+                          ? "bg-blue-500/15 text-blue-400"
+                          : "bg-violet-500/15 text-violet-400"
+                      }`}
+                    >
                       {message.role === "user" ? (
                         <MessageSquare size={19} />
                       ) : (
@@ -623,23 +881,34 @@ function ResearchAssistant({ papers = [] }) {
                           : "ResearchLens AI"}
                       </p>
 
-                      <div className={`rounded-xl p-4 ${
-                        message.role === "user"
-                          ? "bg-blue-500/[0.08] border border-blue-500/15"
-                          : "bg-[#111729] border border-white/10"
-                      }`}>
+                      <div
+                        className={`rounded-xl p-4 ${
+                          message.role === "user"
+                            ? "bg-blue-500/[0.08] border border-blue-500/15"
+                            : "bg-[#111729] border border-white/10"
+                        }`}
+                      >
 
                         {message.loading ? (
                           <div className="flex items-center gap-3 text-violet-300 text-sm">
-                            <LoaderCircle size={18} className="animate-spin" />
+                            <LoaderCircle
+                              size={18}
+                              className="animate-spin"
+                            />
                             Analyzing your research papers...
                           </div>
-                        ) : (
-                          <p className={`text-sm leading-7 whitespace-pre-wrap ${
-                            message.error ? "text-red-300" : "text-gray-200"
-                          }`}>
+                        ) : message.error ? (
+                          <p className="text-sm leading-7 text-red-300 whitespace-pre-wrap">
                             {message.content}
                           </p>
+                        ) : message.role === "user" ? (
+                          <p className="text-sm leading-7 text-gray-200 whitespace-pre-wrap">
+                            {message.content}
+                          </p>
+                        ) : (
+                          <MarkdownContent
+                            content={message.content}
+                          />
                         )}
 
                       </div>
@@ -677,11 +946,14 @@ function ResearchAssistant({ papers = [] }) {
                                       ? `–${citation.page_end}`
                                       : ""}
                                     {" · "}
-                                    {citation.section || "Unidentified section"}
+                                    {citation.section ||
+                                      "Unidentified section"}
                                   </p>
 
                                   <a
-                                    href={`/api/documents/${encodeURIComponent(citation.document_id)}/download`}
+                                    href={`/api/documents/${encodeURIComponent(
+                                      citation.document_id
+                                    )}/download`}
                                     target="_blank"
                                     rel="noreferrer"
                                     className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 mt-2"
@@ -724,7 +996,9 @@ function ResearchAssistant({ papers = [] }) {
 
                 <textarea
                   value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
+                  onChange={(event) =>
+                    setQuestion(event.target.value)
+                  }
                   onKeyDown={(event) => {
                     if (
                       event.key === "Enter" &&
@@ -763,7 +1037,10 @@ function ResearchAssistant({ papers = [] }) {
                     title="Send question"
                   >
                     {loading ? (
-                      <LoaderCircle size={17} className="animate-spin" />
+                      <LoaderCircle
+                        size={17}
+                        className="animate-spin"
+                      />
                     ) : (
                       <Send size={17} />
                     )}
