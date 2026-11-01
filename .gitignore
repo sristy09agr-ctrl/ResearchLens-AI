@@ -12,3 +12,10 @@ data/researchlens.db
 # Environment variables
 .env
 .env.save
+
+# IDE & Editor
+.vscode/
+.idea/
+
+# Storage
+data/qdrant_storage/
