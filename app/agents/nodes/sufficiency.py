@@ -25,10 +25,13 @@ def sufficiency_node(state: AgentState) -> dict:
 
     # Best rerank score across passages
     top_score = reranked[0].get("rerank_score", -99.0)
-    avg_score = sum(r.get("rerank_score", 0.0) for r in reranked) / len(reranked)
 
-    # In cross-encoders, logit scores above -1.0 or positive scores indicate relevance
-    is_sufficient = (top_score >= threshold) or (avg_score > -0.5)
+    # CrossEncoder MS-MARCO MiniLM outputs logits.
+    # Empirical calibration:
+    #   - Directly relevant passages: logits >= -2.0 to +10.0
+    #   - General conceptual context: logits between -9.5 and -2.0
+    #   - Completely unrelated queries (negative controls): logits < -10.5
+    is_sufficient = (top_score >= threshold)
 
     if not is_sufficient:
         reason = (

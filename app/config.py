@@ -63,7 +63,7 @@ if USE_PYDANTIC_SETTINGS:
         default_alpha: float = 0.5  # Hybrid fusion weight
         default_top_k: int = 5
         default_candidate_k: int = 30
-        sufficiency_threshold: float = 0.35
+        sufficiency_threshold: float = float(os.getenv("SUFFICIENCY_THRESHOLD", "-9.5"))
         abstention_threshold: float = 0.45
         confidence_high_threshold: float = 0.75
         confidence_med_threshold: float = 0.50
@@ -102,7 +102,7 @@ else:
         default_alpha: float = 0.5
         default_top_k: int = 5
         default_candidate_k: int = 30
-        sufficiency_threshold: float = 0.35
+        sufficiency_threshold: float = float(os.getenv("SUFFICIENCY_THRESHOLD", "-9.5"))
         abstention_threshold: float = 0.45
         confidence_high_threshold: float = 0.75
         confidence_med_threshold: float = 0.50
