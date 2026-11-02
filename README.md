@@ -184,11 +184,3 @@ make eval
 | `GET` | `/health`, `/ready` | Liveness and readiness container health probes |
 
 ---
-
-## 🏆 Hackathon Presentation & Demonstration Script
-
-* **Minute 1: The Problem:** Academic literature review is slowed by hallucinated papers, fabricated citations, and unverified conflicting claims.
-* **Minute 2: The Agentic Core:** Live demonstration of the LangGraph state machine dynamically decomposing queries, evaluating sufficiency, and reranking across papers.
-* **Minute 3: Multi-Paper Synthesis:** Uploading 3 papers (*Attention*, *LoRA*, *QLoRA*) and generating a structured comparative matrix highlighting **Consensus vs Conflict**.
-* **Minute 4: Zero-Tolerance Citation Audit:** Clicking citation `[1]` to show page-level excerpt grounding; triggering negative-control unanswerable query showing calibrated **Abstention**.
-* **Minute 5: Empirical Superiority:** Presenting the 6-baseline evaluation matrix showing **94% Faithfulness** and **96% Citation Precision**.
